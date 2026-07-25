@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>全页中英对照</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <h1>全页中英对照</h1>
+  <label class="row">
+    <input type="checkbox" id="enabled" checked />
+    <span>自动翻译英文页</span>
+  </label>
+  <p class="hint" id="host"></p>
+  <div class="actions">
+    <button type="button" id="run-now">立即翻译本页</button>
+    <button type="button" id="block-host">禁用当前站点</button>
+    <button type="button" id="unblock-host" hidden>取消禁用站点</button>
+  </div>
+  <p class="hint">正文上下分块 · 导航单行 · 控件中文（悬停看英文）</p>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

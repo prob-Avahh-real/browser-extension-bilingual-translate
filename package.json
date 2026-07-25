@@ -1,0 +1,11 @@
+{
+  "name": "browser-extension-bilingual-translate",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "sync-lib": "node ../tools/lib/bilingual/sync-extension-lib.mjs",
+    "build:userscript": "node ../tools/lib/bilingual/build-userscript.mjs",
+    "test": "node --test test/*.test.js"
+  }
+}

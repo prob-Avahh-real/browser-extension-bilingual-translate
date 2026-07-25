@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "全页中英对照 Bilingual Translate",
+  "version": "1.0.0",
+  "description": "打开英文网页时自动注入中英对照：正文上下分块、导航单行对照、表单控件中文标签。",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "<all_urls>",
+    "https://edge.microsoft.com/*",
+    "https://api.cognitive.microsofttranslator.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "lib/page-detect.js",
+        "lib/toolbar.js",
+        "lib/collect.js",
+        "lib/apply.js",
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "全页中英对照",
+    "default_popup": "popup.html"
+  }
+}

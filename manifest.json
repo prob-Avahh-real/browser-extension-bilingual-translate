@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "全页中英对照 Bilingual Translate",
-  "version": "1.0.0",
-  "description": "打开英文网页时自动注入中英对照：正文上下分块、导航单行对照、表单控件中文标签。",
+  "name": "多意 MulTranslate",
+  "version": "1.1.0",
+  "description": "网页自动注入目标语言对照：正文上下分块、导航单行对照、表单控件翻译。支持 English/中文/韩语/日语/西班牙语/法语互译。",
   "permissions": ["storage"],
   "host_permissions": [
     "<all_urls>",
@@ -28,7 +28,7 @@
     }
   ],
   "action": {
-    "default_title": "全页中英对照",
+    "default_title": "多意",
     "default_popup": "popup.html"
   }
 }

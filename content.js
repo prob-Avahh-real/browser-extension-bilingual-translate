@@ -9,6 +9,7 @@
   let observer = null;
   let historyPatched = false;
   let lastRunAt = 0;
+  let pendingTargetChange = false;
 
   function isSkippableUrl(url) {
     if (!url) return true;
@@ -30,14 +31,24 @@
     return (settings.blockedHosts || []).includes(location.hostname);
   }
 
-  async function translateTexts(texts, fast) {
+  async function translateTexts(texts, fast, sourceLang, targetLang) {
     const res = await chrome.runtime.sendMessage({
       type: 'TRANSLATE_BATCH',
       texts,
       fast,
+      sourceLang,
+      targetLang,
     });
     if (!res?.ok) throw new Error(res?.error || 'translate failed');
     return res.results;
+  }
+
+  async function setTargetLang(code) {
+    try {
+      await chrome.runtime.sendMessage({ type: 'SET_TARGET_LANG', targetLang: code });
+    } catch {
+      /* ignore */
+    }
   }
 
   async function runBilingualize(reason) {
@@ -49,12 +60,36 @@
 
     const settings = await getSettings();
     if (!settings.enabled || hostBlocked(settings)) return;
-    if (!BilingualLib.isEnglishPage()) return;
+
+    const pageLang = BilingualLib.detectPageLang?.() || null;
+    if (!pageLang) return;
+    const configured = settings.sourceLang && settings.sourceLang !== 'auto'
+      ? settings.sourceLang
+      : pageLang;
+    const targetLang = settings.targetLang || 'zh-Hans';
+    const targetLabel = settings.targetLabel || '';
+    if (configured === targetLang) {
+      BilingualLib.showToolbar(`源语言与目标语言相同（${targetLabel || targetLang}），已跳过`, {
+        onClose: () => BilingualLib.teardownBilingual(),
+      });
+      setTimeout(() => BilingualLib.teardownBilingual(), 2500);
+      return;
+    }
+    const sourceLang = configured;
 
     running = true;
     lastRunAt = Date.now();
     try {
       BilingualLib.showToolbar('正在识别并翻译…', {
+        target: targetLang,
+        languages: settings.languages || null,
+        onTargetChange: (code) => {
+          pendingTargetChange = true;
+          setTargetLang(code).finally(() => {
+            pageDisabled = false;
+            schedule('manual');
+          });
+        },
         onClose: () => {
           pageDisabled = true;
           BilingualLib.teardownBilingual();
@@ -65,18 +100,20 @@
         max: MAX_SEGMENTS,
         maxUi: MAX_UI,
         reset: true,
+        source: sourceLang,
       });
 
       if (!collected.texts.length) {
-        BilingualLib.updateToolbar('未检测到英文段落');
+        BilingualLib.updateToolbar('未检测到可翻译段落');
         return;
       }
 
       BilingualLib.updateToolbar(`翻译中 ${collected.total} 段…`);
-      const translations = await translateTexts(collected.texts, reason !== 'initial');
+      const translations = await translateTexts(collected.texts, reason !== 'initial', sourceLang, targetLang);
       const applied = BilingualLib.applyTranslations({
         translations,
         pageUrl: location.href,
+        targetLabel,
       });
 
       BilingualLib.updateToolbar(
@@ -87,6 +124,10 @@
       console.error('[bilingual-translate]', err);
     } finally {
       running = false;
+      if (pendingTargetChange) {
+        pendingTargetChange = false;
+        schedule('manual');
+      }
     }
   }
 

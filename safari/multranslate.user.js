@@ -1,11 +1,13 @@
 // ==UserScript==
-// @name         全页中英对照 Bilingual Translate
-// @namespace    https://github.com/skat/projects
-// @version      1.0.0
-// @description  打开英文网页时自动注入中英对照（正文/导航/控件）
+// @name         多意 MulTranslate
+// @namespace    https://github.com/prob-Avahh-real/multranslate
+// @version      1.1.0
+// @description  网页自动注入目标语言对照（正文/导航/控件），支持英/中/韩/日/西/法互译
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @connect      edge.microsoft.com
 // @connect      api.cognitive.microsofttranslator.com
 // @connect      api.mymemory.translated.net
@@ -15,8 +17,18 @@
   'use strict';
 /**
  * Browser-side page language detection. Loaded in content scripts / userscripts.
+ * Detects among: en, zh-Hans, ko, ja, es, fr.
  */
 (function (global) {
+  const RE_LATIN = /[A-Za-z\u00c0-\u024f]/g;
+  const RE_HAN = /[\u4e00-\u9fff]/g;
+  const RE_HANGUL = /[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]/g;
+  const RE_KANA = /[\u3040-\u30ff\u31f0-\u31ff]/g;
+
+  function count(re, s) {
+    return (s.match(re) || []).length;
+  }
+
   function isMostlyEnglish(s) {
     const letters = s.replace(/[^A-Za-z\u4e00-\u9fff]/g, '');
     if (letters.length < 2) return false;
@@ -25,21 +37,124 @@
     return latin >= 2 && latin > cjk * 2;
   }
 
-  function isEnglishPage() {
-    const lang = (document.documentElement.getAttribute('lang') || '').toLowerCase();
-    if (lang.startsWith('en')) return true;
-    if (lang.startsWith('zh')) return false;
+  /**
+   * Does a single segment belong to the given source language?
+   * Used by collect.js to filter candidate text nodes.
+   */
+  function textMatchesLang(s, lang) {
+    const latin = count(RE_LATIN, s);
+    const han = count(RE_HAN, s);
+    const hangul = count(RE_HANGUL, s);
+    const kana = count(RE_KANA, s);
+    const cjk = han + hangul + kana;
+    const letters = latin + cjk;
+    if (letters < 2) return false;
+    if (lang === 'zh-Hans') return han >= 2 && han > latin;
+    if (lang === 'ko') return hangul >= 2 && hangul > latin;
+    if (lang === 'ja') return kana >= 1 && kana + han >= 2 && kana + han > latin;
+    // Latin-script sources: en / es / fr share the same filter.
+    return latin >= 2 && latin > cjk * 2;
+  }
 
-    const root =
-      document.querySelector('#mw-content-text, article, main, [role="main"]') ||
-      document.body;
-    const sample = (root.innerText || '').slice(0, 4000);
-    if (!sample.trim()) return false;
-    return isMostlyEnglish(sample);
+  const LATIN_STOPS = {
+    en: new Set(('the and of to in is are was were for with that this it as at by on be or an from not have has had but they you we can will would there their what about which when make like time just know take into your good some could them see other than then now only come its over think also back after use two how our work first well way even new want because any these give day most').split(' ')),
+    es: new Set(('el la los las de del que en y un una por con para es son como pero si le se lo su sus al este esta estos estas eso esa entre sobre más ya muy puede están han tiene tienen cuando donde quien porque hasta durante según así entonces además también tampoco ni sino o e').split(' ')),
+    fr: new Set(('le la les de des du un une et est sont que qui quoi en au aux dans sur pour par avec sans ce cette ces se sa ses son leur leurs ne plus moins comme mais ou où quand comment pourquoi parce très trop aussi toujours jamais seulement notamment afin dont vu faire font été être avoir avait ayant doit peut').split(' ')),
+  };
+
+  function detectLatinLang(sample) {
+    const words = sample.toLowerCase().match(/[a-zà-ÿ']+/g) || [];
+    const scores = { en: 0, es: 0, fr: 0 };
+    for (const w of words) {
+      if (LATIN_STOPS.en.has(w)) scores.en += 1;
+      if (LATIN_STOPS.es.has(w)) scores.es += 1;
+      if (LATIN_STOPS.fr.has(w)) scores.fr += 1;
+    }
+    let best = 'en';
+    let bestScore = -1;
+    for (const k of Object.keys(scores)) {
+      if (scores[k] > bestScore) {
+        bestScore = scores[k];
+        best = k;
+      }
+    }
+    return best;
+  }
+
+  function mapHtmlLang(lang) {
+    if (!lang) return null;
+    const l = lang.toLowerCase();
+    if (l.startsWith('en')) return 'en';
+    if (l.startsWith('zh')) return 'zh-Hans';
+    if (l.startsWith('ko')) return 'ko';
+    if (l.startsWith('ja')) return 'ja';
+    if (l.startsWith('es')) return 'es';
+    if (l.startsWith('fr')) return 'fr';
+    return null;
+  }
+
+  /**
+   * Page text sample that ignores our own overlay: wrapped segments contribute
+   * their original source text via data-bi-en; everything else is walked raw.
+   */
+  function pageSample() {
+    const parts = [];
+    document.querySelectorAll('[data-bi-wrap]').forEach((el) => {
+      const v = el.getAttribute('data-bi-en');
+      if (v) parts.push(v);
+    });
+    const root = document.querySelector('#mw-content-text, article, main, [role="main"]') || document.body;
+    if (!root) return parts.join(' ').slice(0, 8000);
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let n;
+    let guard = 0;
+    while ((n = walker.nextNode()) && guard < 4000) {
+      guard += 1;
+      const p = n.parentElement;
+      if (!p) continue;
+      if (p.closest('[data-bi-wrap], #bilingual-toolbar')) continue;
+      parts.push(n.textContent || '');
+    }
+    return parts.join(' ').slice(0, 8000);
+  }
+
+  function detectFromSample(sample) {
+    if (!sample || !sample.trim()) return null;
+    const latin = count(RE_LATIN, sample);
+    const han = count(RE_HAN, sample);
+    const hangul = count(RE_HANGUL, sample);
+    const kana = count(RE_KANA, sample);
+    const cjk = han + hangul + kana;
+
+    if (hangul >= 4 && hangul > latin && hangul > han) return 'ko';
+    if (kana >= 2 && kana + han > latin) return 'ja';
+    if (han >= 4 && han > latin && kana < 2) return 'zh-Hans';
+    if (latin >= 8 && latin > cjk * 2) return detectLatinLang(sample);
+
+    // Fallbacks for sparse samples.
+    if (hangul > latin && hangul > han && hangul >= 2) return 'ko';
+    if (han > latin && han >= 2) return kana >= 1 ? 'ja' : 'zh-Hans';
+    if (latin >= 2) return detectLatinLang(sample);
+    return null;
+  }
+
+  /**
+   * Returns one of 'en' | 'zh-Hans' | 'ko' | 'ja' | 'es' | 'fr', or null.
+   */
+  function detectPageLang() {
+    const mapped = mapHtmlLang(document.documentElement.getAttribute('lang'));
+    if (mapped) return mapped;
+    return detectFromSample(pageSample());
+  }
+
+  function isEnglishPage() {
+    return detectPageLang() === 'en';
   }
 
   global.BilingualLib = global.BilingualLib || {};
   global.BilingualLib.isMostlyEnglish = isMostlyEnglish;
+  global.BilingualLib.textMatchesLang = textMatchesLang;
+  global.BilingualLib.detectPageLang = detectPageLang;
   global.BilingualLib.isEnglishPage = isEnglishPage;
 })(typeof globalThis !== 'undefined' ? globalThis : window);
 
@@ -70,6 +185,22 @@
       padding: 4px 10px;
       cursor: pointer;
       font: inherit;
+    }
+    #bilingual-toolbar select {
+      background: rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,255,255,0.35);
+      color: #f2fff8;
+      border-radius: 6px;
+      padding: 4px 6px;
+      font: inherit;
+      cursor: pointer;
+    }
+    #bilingual-toolbar select:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+    #bilingual-toolbar .bi-close {
+      margin-left: auto;
     }
     [data-bi-wrap][data-bi-kind="body"] {
       display: flex !important;
@@ -181,8 +312,39 @@
     document.head.appendChild(style);
   }
 
-  function showToolbar(message, { onClose } = {}) {
+  const toolbarState = {
+    target: 'zh-Hans',
+    languages: null,
+    onTargetChange: null,
+  };
+
+  function renderLanguageSelect(bar) {
+    const langs = toolbarState.languages;
+    if (!langs || !langs.length) return null;
+    const select = document.createElement('select');
+    select.id = 'bilingual-lang';
+    select.setAttribute('aria-label', 'target language');
+    for (const lang of langs) {
+      const opt = document.createElement('option');
+      opt.value = lang.code;
+      opt.textContent = lang.label || lang.code;
+      select.appendChild(opt);
+    }
+    select.value = toolbarState.target || langs[0].code;
+    select.disabled = !toolbarState.onTargetChange;
+    select.addEventListener('change', () => {
+      toolbarState.onTargetChange?.(select.value);
+    });
+    bar.appendChild(select);
+    return select;
+  }
+
+  function showToolbar(message, { onClose, onTargetChange, target, languages } = {}) {
     ensureStyles();
+    if (target) toolbarState.target = target;
+    if (languages) toolbarState.languages = languages;
+    if (onTargetChange !== undefined) toolbarState.onTargetChange = onTargetChange;
+
     let bar = document.getElementById('bilingual-toolbar');
     if (!bar) {
       bar = document.createElement('div');
@@ -190,10 +352,12 @@
       document.documentElement.appendChild(bar);
       document.body.style.paddingTop = '48px';
     }
-    bar.innerHTML = `<strong>全页中英对照</strong><span>${message || '正在识别并翻译…'}</span>`;
+    bar.innerHTML = `<strong>多意</strong><span>${message || '正在识别并翻译…'}</span>`;
+    renderLanguageSelect(bar);
     if (onClose) {
       const btn = document.createElement('button');
       btn.type = 'button';
+      btn.className = 'bi-close';
       btn.textContent = '关闭本页';
       btn.addEventListener('click', onClose);
       bar.appendChild(btn);
@@ -238,7 +402,7 @@
  * Collect English segments on the page and wrap with data-bi-wrap markers.
  */
 (function (global) {
-  function collectSegments({ max = 600, maxUi = 260, reset = true } = {}) {
+  function collectSegments({ max = 600, maxUi = 260, reset = true, source = 'en' } = {}) {
     if (reset) {
       global.BilingualLib?.teardownBilingual?.();
     }
@@ -253,6 +417,8 @@
     ]);
 
     function mostlyEnglish(s) {
+      const fn = global.BilingualLib?.textMatchesLang;
+      if (fn) return fn(s, source);
       const letters = s.replace(/[^A-Za-z\u4e00-\u9fff]/g, '');
       if (letters.length < 2) return false;
       const latin = (letters.match(/[A-Za-z]/g) || []).length;
@@ -525,11 +691,11 @@
       .replace(/"/g, '&quot;');
   }
 
-  function hasChinese(s) {
-    return /[\u4e00-\u9fff]/.test(s || '');
+  function translatedText(item) {
+    return item?.text ?? item?.zh ?? '';
   }
 
-  function applyTranslations({ translations, pageUrl = location.href }) {
+  function applyTranslations({ translations, pageUrl = location.href, targetLabel = '' }) {
     global.BilingualLib?.ensureStyles?.();
 
     let ok = 0;
@@ -545,7 +711,8 @@
       const en = el.getAttribute('data-bi-en') || '';
       const item = translations[i] || {};
       const kind = el.getAttribute('data-bi-kind') || 'body';
-      if (!item.ok || !hasChinese(item.zh)) {
+      const text = translatedText(item);
+      if (!item.ok || !text.trim()) {
         if (kind === 'control') {
           el.textContent = en;
           el.removeAttribute('data-bi-wrap');
@@ -557,33 +724,34 @@
         skipped += 1;
         skippedDetail.push({
           i,
-          reason: !item.ok ? (item.reason || 'not-ok') : 'no-chinese-at-apply',
+          reason: !item.ok ? (item.reason || 'not-ok') : 'empty-translation-at-apply',
           en: en.slice(0, 120),
-          zh: (item.zh || '').slice(0, 80),
+          text: text.slice(0, 80),
         });
         continue;
       }
       if (kind === 'control') {
-        el.textContent = item.zh;
-        el.setAttribute('title', `${item.zh} / ${en}`);
+        el.textContent = text;
+        el.setAttribute('title', `${text} / ${en}`);
         ok += 1;
       } else if (kind === 'ui') {
         el.innerHTML =
-          `<span class="bi-zh">${escapeHtml(item.zh)}</span>` +
+          `<span class="bi-zh">${escapeHtml(text)}</span>` +
           `<span class="bi-sep"> · </span>` +
           `<span class="bi-en">${escapeHtml(en)}</span>`;
         ok += 1;
       } else {
         el.innerHTML =
-          `<span class="bi-zh">${escapeHtml(item.zh)}</span>` +
+          `<span class="bi-zh">${escapeHtml(text)}</span>` +
           `<span class="bi-en">${escapeHtml(en)}</span>`;
         ok += 1;
       }
     }
 
     const host = pageUrl.replace(/^https?:\/\//, '').slice(0, 36);
+    const targetPart = targetLabel ? `${targetLabel} · ` : '';
     global.BilingualLib?.showToolbar?.(
-      `已译 ${ok} · 正文对照 / 导航对照 / 控件中文（悬停看英文） · ${host}`,
+      `已译 ${ok} · ${targetPart}正文对照 / 导航对照 / 控件翻译（悬停看英文） · ${host}`,
     );
     document.body.style.paddingTop = '56px';
     const content = document.querySelector('#mw-content-text, .mw-body-content, article, main');
@@ -598,9 +766,34 @@
 
 
   const BATCH = 40;
+  const LANGUAGES = [{"code":"en","label":"English","edge":"en","mm":"en","script":"latin"},{"code":"zh-Hans","label":"简体中文","edge":"zh-Hans","mm":"zh-CN","script":"han"},{"code":"ko","label":"한국어","edge":"ko","mm":"ko","script":"hangul"},{"code":"ja","label":"日本語","edge":"ja","mm":"ja","script":"kana"},{"code":"es","label":"Español","edge":"es","mm":"es","script":"latin"},{"code":"fr","label":"Français","edge":"fr","mm":"fr","script":"latin"}];
+  let TARGET_LANG = 'zh-Hans';
+  let SOURCE_LANG = 'auto';
   let edgeToken = null;
   let edgeTokenAt = 0;
   const cache = new Map();
+
+  function langMeta(code) {
+    return LANGUAGES.find((l) => l.code === code) || LANGUAGES[0];
+  }
+
+  function hasTargetScript(s) {
+    const text = s || '';
+    const script = langMeta(TARGET_LANG).script;
+    if (script === 'han') return /[\u4e00-\u9fff]/.test(text);
+    if (script === 'hangul') return /[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]/.test(text);
+    if (script === 'kana') return /[\u3040-\u30ff\u31f0-\u31ff\u4e00-\u9fff]/.test(text);
+    if (script === 'latin') return /[A-Za-z\u00c0-\u024f]/.test(text);
+    return true;
+  }
+
+  const PROPER_NOUN_SUFFIX = {
+    'zh-Hans': '（专有名词）',
+    ko: '（고유명사）',
+    ja: '（固有名詞）',
+    es: ' (nombre propio)',
+    fr: ' (nom propre)',
+  };
 
   function gmFetch(url, opts = {}) {
     return new Promise((resolve, reject) => {
@@ -626,8 +819,10 @@
 
   async function translateBatchEdge(texts) {
     const token = await getEdgeToken();
+    const from = encodeURIComponent(langMeta(SOURCE_LANG === 'auto' ? 'en' : SOURCE_LANG).edge);
+    const to = encodeURIComponent(langMeta(TARGET_LANG).edge);
     const res = await gmFetch(
-      'https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=en&to=zh-Hans',
+      'https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=' + from + '&to=' + to,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
@@ -641,39 +836,54 @@
 
   async function translateOneMyMemory(text) {
     const q = encodeURIComponent(text.slice(0, 480));
-    const res = await gmFetch('https://api.mymemory.translated.net/get?q=' + q + '&langpair=en|zh-CN');
+    const pair = langMeta(SOURCE_LANG === 'auto' ? 'en' : SOURCE_LANG).mm + '|' + langMeta(TARGET_LANG).mm;
+    const res = await gmFetch('https://api.mymemory.translated.net/get?q=' + q + '&langpair=' + pair);
     const data = await res.json();
     return data?.responseData?.translatedText || '';
+  }
+
+  function acceptText(en, text) {
+    const e = (en || '').trim();
+    const t = (text || '').trim();
+    if (!t) return { ok: false, text: '' };
+    if (!hasTargetScript(t)) {
+      if (e.length <= 24 && /^[A-Za-z0-9.+\/_-]+$/.test(e)) {
+        return { ok: true, text: e + (PROPER_NOUN_SUFFIX[TARGET_LANG] || PROPER_NOUN_SUFFIX['zh-Hans']) };
+      }
+      return { ok: false, text: t };
+    }
+    if (t.toLowerCase() === e.toLowerCase()) return { ok: false, text: t };
+    return { ok: true, text: t };
   }
 
   async function translateAll(texts) {
     const results = new Array(texts.length);
     const need = [];
     for (let i = 0; i < texts.length; i++) {
-      const key = texts[i].trim().toLowerCase();
+      const key = SOURCE_LANG + '>' + TARGET_LANG + '\n' + texts[i].trim().toLowerCase();
       if (cache.has(key)) { results[i] = cache.get(key); continue; }
       need.push(i);
     }
     for (let s = 0; s < need.length; s += BATCH) {
       const slice = need.slice(s, s + BATCH);
       const payload = slice.map((i) => texts[i]);
-      let zhs = [];
-      try { zhs = await translateBatchEdge(payload); } catch {
-        zhs = [];
+      let translated = [];
+      try { translated = await translateBatchEdge(payload); } catch {
+        translated = [];
         for (const t of payload) {
-          try { zhs.push(await translateOneMyMemory(t)); } catch { zhs.push(''); }
+          try { translated.push(await translateOneMyMemory(t)); } catch { translated.push(''); }
         }
       }
       for (let j = 0; j < slice.length; j++) {
         const i = slice[j];
-        const zh = (zhs[j] || '').trim();
-        const row = /[\u4e00-\u9fff]/.test(zh) ? { ok: true, zh } : { ok: false, zh: '', reason: 'fail' };
-        cache.set(texts[i].trim().toLowerCase(), row);
+        const accepted = acceptText(texts[i], translated[j]);
+        const row = accepted.ok ? { ok: true, text: accepted.text } : { ok: false, text: '', reason: 'fail' };
+        cache.set(SOURCE_LANG + '>' + TARGET_LANG + '\n' + texts[i].trim().toLowerCase(), row);
         results[i] = row;
       }
     }
     for (let i = 0; i < results.length; i++) {
-      if (!results[i]) results[i] = { ok: false, zh: '', reason: 'missing' };
+      if (!results[i]) results[i] = { ok: false, text: '', reason: 'missing' };
     }
     return results;
   }
@@ -682,21 +892,57 @@
   const MAX_UI = 260;
   let running = false;
   let timer = null;
+  let pendingTargetChange = false;
+
+  try {
+    const saved = GM_getValue('bi-target-lang', 'zh-Hans');
+    if (LANGUAGES.some((l) => l.code === saved)) TARGET_LANG = saved;
+  } catch { /* ignore */ }
+
+  function targetLabel() {
+    return langMeta(TARGET_LANG).label || TARGET_LANG;
+  }
+
+  function resolveSource() {
+    const detected = BilingualLib.detectPageLang?.() || null;
+    if (!detected) return null;
+    return SOURCE_LANG === 'auto' ? detected : SOURCE_LANG;
+  }
 
   async function run(reason) {
     if (running) return;
-    if (!BilingualLib.isEnglishPage()) return;
+    const source = resolveSource();
+    if (!source) return;
+    if (source === TARGET_LANG) {
+      BilingualLib.showToolbar('源语言与目标语言相同，已跳过');
+      setTimeout(() => BilingualLib.teardownBilingual(), 2500);
+      return;
+    }
+    SOURCE_LANG = source;
     running = true;
     try {
-      BilingualLib.showToolbar('正在识别并翻译…');
-      const collected = BilingualLib.collectSegments({ max: MAX_SEGMENTS, maxUi: MAX_UI, reset: true });
+      BilingualLib.showToolbar('正在识别并翻译…', {
+        target: TARGET_LANG,
+        languages: LANGUAGES,
+        onTargetChange: (code) => {
+          pendingTargetChange = true;
+          try { GM_setValue('bi-target-lang', code); } catch { /* ignore */ }
+          TARGET_LANG = code;
+          schedule('manual');
+        },
+      });
+      const collected = BilingualLib.collectSegments({ max: MAX_SEGMENTS, maxUi: MAX_UI, reset: true, source: SOURCE_LANG });
       if (!collected.texts.length) return;
       const translations = await translateAll(collected.texts);
-      BilingualLib.applyTranslations({ translations, pageUrl: location.href });
+      BilingualLib.applyTranslations({ translations, pageUrl: location.href, targetLabel: targetLabel() });
     } catch (e) {
       BilingualLib.updateToolbar('翻译失败: ' + (e.message || e));
     } finally {
       running = false;
+      if (pendingTargetChange) {
+        pendingTargetChange = false;
+        schedule('manual');
+      }
     }
   }
 

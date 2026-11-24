@@ -20,6 +20,17 @@ h1 {
   cursor: pointer;
 }
 
+select {
+  margin-left: auto;
+  border: 1px solid #1a5c45;
+  border-radius: 6px;
+  padding: 4px 6px;
+  font: inherit;
+  color: #0f3d2e;
+  background: #fff;
+  cursor: pointer;
+}
+
 .hint {
   margin: 8px 0;
   color: #666;

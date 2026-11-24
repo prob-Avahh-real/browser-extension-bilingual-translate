@@ -19,8 +19,9 @@ const required = [
   'lib/page-detect.js',
   'lib/toolbar.js',
   'lib/glossary.js',
+  'lib/languages.js',
   'lib/translate-all.js',
-  'safari/bilingual-translate.user.js',
+  'safari/multranslate.user.js',
 ];
 
 test('project smoke: critical files exist', () => {

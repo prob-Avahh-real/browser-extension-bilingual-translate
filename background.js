@@ -1,8 +1,18 @@
 import { translateAll } from './lib/translate-all.js';
+import {
+  SOURCE_LANGUAGES,
+  TARGET_LANGUAGES,
+  normalizeSourceLang,
+  normalizeTargetLang,
+  targetLabel,
+} from './lib/languages.js';
 
 const memoryCache = new Map();
 const STORAGE_KEY = 'bilingualTranslateCache';
 const MAX_STORAGE_ENTRIES = 5000;
+
+const LANGUAGE_OPTIONS = TARGET_LANGUAGES.map(({ code, label }) => ({ code, label }));
+const SOURCE_OPTIONS = SOURCE_LANGUAGES.map(({ code, label }) => ({ code, label }));
 
 async function loadStorageCache() {
   try {
@@ -29,25 +39,48 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     if (msg.type === 'TRANSLATE_BATCH') {
       await loadStorageCache();
+      const target = normalizeTargetLang(msg.targetLang);
+      const source = normalizeSourceLang(msg.sourceLang);
       const results = await translateAll(msg.texts || [], {
         fast: Boolean(msg.fast),
         cache: memoryCache,
+        source: source === 'auto' ? 'en' : source,
+        target,
       });
       persistCache().catch(() => {});
-      sendResponse({ ok: true, results });
+      sendResponse({ ok: true, results, target, source });
       return;
     }
     if (msg.type === 'GET_SETTINGS') {
-      const data = await chrome.storage.local.get(['enabled', 'blockedHosts']);
+      const data = await chrome.storage.local.get(['enabled', 'blockedHosts', 'targetLang', 'sourceLang']);
+      const target = normalizeTargetLang(data.targetLang);
+      const source = normalizeSourceLang(data.sourceLang);
       sendResponse({
         enabled: data.enabled !== false,
         blockedHosts: data.blockedHosts || [],
+        targetLang: target,
+        targetLabel: targetLabel(target),
+        languages: LANGUAGE_OPTIONS,
+        sourceLang: source,
+        sourceLanguages: SOURCE_OPTIONS,
       });
       return;
     }
     if (msg.type === 'SET_ENABLED') {
       await chrome.storage.local.set({ enabled: Boolean(msg.enabled) });
       sendResponse({ ok: true });
+      return;
+    }
+    if (msg.type === 'SET_TARGET_LANG') {
+      const target = normalizeTargetLang(msg.targetLang);
+      await chrome.storage.local.set({ targetLang: target });
+      sendResponse({ ok: true, targetLang: target, targetLabel: targetLabel(target) });
+      return;
+    }
+    if (msg.type === 'SET_SOURCE_LANG') {
+      const source = normalizeSourceLang(msg.sourceLang);
+      await chrome.storage.local.set({ sourceLang: source });
+      sendResponse({ ok: true, sourceLang: source });
       return;
     }
     if (msg.type === 'BLOCK_HOST') {
